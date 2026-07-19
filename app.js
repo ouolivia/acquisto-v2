@@ -31,7 +31,8 @@ function compactNumber(value){ const n=Number(value); return Number.isInteger(n)
 function totalPieces(line){ return line.unit==='pack'?Number(line.qty)*Number(line.packSize):Number(line.qty); }
 function draftQuantity(line){ return line.unit==='pack'&&Number(line.qty)===.5?'半':String(line.qty); }
 function quantityDisplay(line){ const pieces=compactNumber(totalPieces(line)); return line.unit==='pack'&&Number(line.qty)===.5?`半包（${pieces}件）`:`${pieces}件`; }
-function exportQuantity(line){ return line.unit==='pack'&&Number(line.qty)===.5?'半包':compactNumber(line.qty); }
+function exportQuantity(line){ return line.unit==='pack'?(Number(line.qty)===.5?'半包':`${compactNumber(line.qty)}包`):compactNumber(line.qty); }
+function pdfQuantity(line){ return line.unit==='pack'?exportQuantity(line):`${compactNumber(line.qty)}件`; }
 function isNumericColor(color){ return /^-?\d+(?:[.,]\d+)?$/.test(String(color||'').trim()); }
 function batchStats(b){ const pieces=b.lines.reduce((s,l)=>s+totalPieces(l),0); const models=new Set(b.lines.map(l=>l.model)).size; const amount=b.lines.reduce((s,l)=>s+(pricePending(l.cost)?0:Number(l.cost)*totalPieces(l)),0); const hasPendingCost=b.lines.some(l=>pricePending(l.cost)); return {pieces,models,amount,hasPendingCost}; }
 function detailGroups(b,order='sorted'){
@@ -195,23 +196,25 @@ function exportExcel(b){
   download(new Blob(['\ufeff',html],{type:'application/vnd.ms-excel;charset=utf-8'}),safeName(`采购单_${b.supplier}_${b.date}.xls`));toast('Excel 已导出');
 }
 
-function exportPdf(b){
+async function exportPdf(b){
   if(!b.lines.length)return toast('没有可导出的明细');
   const W=1240,H=1754,margin=24,tableW=W-margin*2,headerH=43,pageBottom=H-48;
-  const widths=[260,170,485,155,tableW-1070],heads=['商品型号','颜色','门店','数量','进价'];
+  const widths=[220,150,380,125,120,tableW-995],heads=['商品型号','颜色','门店','数量','进价','备注'];
   const models=modelDetailGroups(b,'input').map(m=>({...m,items:m.items.map(g=>({...g,displayColors:g.colors.filter(Boolean)}))}));
   const pages=[];let canvas,c,y;
   const fontFamily='Songti SC, STSong, SimSun, PingFang SC, serif';
   const line=(x1,y1,x2,y2,dashed=false)=>{c.save();c.strokeStyle='#111';c.lineWidth=2;c.setLineDash(dashed?[6,5]:[]);c.beginPath();c.moveTo(x1,y1);c.lineTo(x2,y2);c.stroke();c.restore();};
   const centered=(text,x,w,top,height,font='30px',color='#111')=>{c.save();c.fillStyle=color;c.font=`${font} ${fontFamily}`;c.textAlign='center';c.textBaseline='middle';c.fillText(String(text),x+w/2,top+height/2);c.restore();};
-  const wrap=(text,maxWidth,font='29px')=>{c.save();c.font=`${font} ${fontFamily}`;const parts=String(text).split(/\s+/);const lines=[];let current='';for(const part of parts){const next=current?`${current} ${part}`:part;if(!current||c.measureText(next).width<=maxWidth)current=next;else{lines.push(current);current=part;}}if(current)lines.push(current);c.restore();return lines.length?lines:[''];};
+  const wrap=(text,maxWidth,font='29px')=>{c.save();c.font=`${font} ${fontFamily}`;const lines=[];let current='';for(const ch of Array.from(String(text??''))){if(ch==='\n'){lines.push(current);current='';continue;}const next=current+ch;if(!current||c.measureText(next).width<=maxWidth)current=next;else{lines.push(current.trimEnd());current=ch.trimStart();}}if(current||!lines.length)lines.push(current);c.restore();return lines;};
   const multiline=(lines,x,w,top,height,font='29px')=>{const lh=37,total=(lines.length-1)*lh;c.save();c.fillStyle='#111';c.font=`${font} ${fontFamily}`;c.textAlign='center';c.textBaseline='middle';lines.forEach((v,i)=>c.fillText(v,x+w/2,top+height/2-total/2+i*lh));c.restore();};
   const itemHeight=item=>Math.max(63,24+Math.max(1,item.displayColors.length,wrap(item.stores.join(', '),widths[2]-28).length)*37);
   const newPage=()=>{if(canvas)pages.push(canvas.toDataURL('image/jpeg',.94));canvas=document.createElement('canvas');canvas.width=W;canvas.height=H;c=canvas.getContext('2d');c.fillStyle='#fff';c.fillRect(0,0,W,H);c.fillStyle='#111';c.textAlign='center';c.textBaseline='alphabetic';c.font=`bold 38px ${fontFamily}`;c.fillText('小潘家采购分货单',W/2,58);c.textAlign='left';c.font=`29px ${fontFamily}`;c.fillText(`供应商名称：${b.supplier}`,margin+7,101);const [year,month,day]=String(b.date||'').split('-').map(Number);c.textAlign='right';c.fillText(`${year||''}年　${month||''}　月　${day||''}　日`,W-margin-7,101);y=112;c.fillStyle='#c7c7c7';c.fillRect(margin,y,tableW,headerH);let x=margin;heads.forEach((h,i)=>{centered(h,x,widths[i],y,headerH,'bold 25px');x+=widths[i];});line(margin,y,W-margin,y);line(margin,y+headerH,W-margin,y+headerH);x=margin;for(const w of widths){line(x,y,x,y+headerH);x+=w;}line(W-margin,y,W-margin,y+headerH);y+=headerH;};
   newPage();
-  for(const model of models){const heights=model.items.map(itemHeight),groupH=heights.reduce((s,n)=>s+n,0),pageCapacity=pageBottom-(112+headerH);if(groupH<=pageCapacity&&y+groupH>pageBottom)newPage();let i=0;while(i<model.items.length){if(y+heights[i]>pageBottom)newPage();const startY=y,startIndex=i,xModel=margin,xColor=xModel+widths[0],xStores=xColor+widths[1],xQty=xStores+widths[2],xCost=xQty+widths[3];while(i<model.items.length&&y+heights[i]<=pageBottom){const item=model.items[i],h=heights[i],colors=item.displayColors.length?item.displayColors:[''];multiline(colors,xColor,widths[1],y,h);multiline(wrap(item.stores.join(', '),widths[2]-28),xStores,widths[2],y,h);centered(totalPieces(item),xQty,widths[3],y,h,'30px');y+=h;i++;if(i<model.items.length&&y+heights[i]<=pageBottom)line(xColor,y,xCost,y,true);}const endY=y;centered(model.model,xModel,widths[0],startY,endY-startY,'38px');centered(euro(model.cost),xCost,widths[4],startY,endY-startY,'29px');line(margin,startY,W-margin,startY);line(margin,endY,W-margin,endY);for(const x of [xModel,xColor,xStores,xQty,xCost,W-margin])line(x,startY,x,endY);if(i===startIndex)break;if(i<model.items.length)newPage();}}
+  for(const model of models){const heights=model.items.map(itemHeight),noteLines=wrap(model.note||'',widths[5]-24,'24px'),noteH=model.note?24+noteLines.length*31:63;let groupH=heights.reduce((s,n)=>s+n,0);if(noteH>groupH){heights[heights.length-1]+=noteH-groupH;groupH=noteH;}const pageCapacity=pageBottom-(112+headerH);if(groupH<=pageCapacity&&y+groupH>pageBottom)newPage();let i=0;while(i<model.items.length){if(y+heights[i]>pageBottom)newPage();const startY=y,startIndex=i,xModel=margin,xColor=xModel+widths[0],xStores=xColor+widths[1],xQty=xStores+widths[2],xCost=xQty+widths[3],xNote=xCost+widths[4];while(i<model.items.length&&y+heights[i]<=pageBottom){const item=model.items[i],h=heights[i],colors=item.displayColors.length?item.displayColors:[''];multiline(colors,xColor,widths[1],y,h);multiline(wrap(item.stores.join(', '),widths[2]-28),xStores,widths[2],y,h);centered(pdfQuantity(item),xQty,widths[3],y,h,'27px');y+=h;i++;if(i<model.items.length&&y+heights[i]<=pageBottom)line(xColor,y,xCost,y,true);}const endY=y;centered(model.model,xModel,widths[0],startY,endY-startY,'36px');centered(euro(model.cost),xCost,widths[4],startY,endY-startY,'27px');if(model.note)multiline(wrap(model.note,widths[5]-24,'24px'),xNote,widths[5],startY,endY-startY,'24px');line(margin,startY,W-margin,startY);line(margin,endY,W-margin,endY);for(const x of [xModel,xColor,xStores,xQty,xCost,xNote,W-margin])line(x,startY,x,endY);if(i===startIndex)break;if(i<model.items.length)newPage();}}
   pages.push(canvas.toDataURL('image/jpeg',.94));
-  const pdf=jpegPagesToPdf(pages,W,H);download(pdf,safeName(`采购单_${b.supplier}_${b.date}.pdf`));toast('PDF 已导出');
+  const pdf=jpegPagesToPdf(pages,W,H),name=safeName(`采购单_${b.supplier}_${b.date}.pdf`),file=new File([pdf],name,{type:'application/pdf'});
+  try{if(navigator.share&&navigator.canShare?.({files:[file]})){await navigator.share({files:[file],title:`采购分货单 - ${b.supplier}`});toast('PDF 文件已打开分享');return;}}catch(error){if(error?.name==='AbortError')return;}
+  download(pdf,name);toast('PDF 已导出');
 }
 function jpegPagesToPdf(dataUrls,w,h){
   const enc=new TextEncoder();const objects=[];const add=s=>(objects.push(s),objects.length);const pageIds=[],imageIds=[];const catalog=add(''),pagesId=add('');
